@@ -32,3 +32,4 @@ server/abitti2.db
 server/scripts/naksu-password-words.json
 server/scripts/naksu-password-words.local.json
 temp-naksu2-app/
+temp-naksu2-app.asar

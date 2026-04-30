@@ -76,10 +76,9 @@ npm run lint
 - `src/components/DesktopConsole.jsx` - noVNC-klient
 - `server/server.js` - API, SSH, terminal- och desktop-websocket
 - `server/scripts/` - script för URL/lösenordsuppslag
-- `server/scripts/naksu-password-words.json` - lokal ordlista för Naksu2-lösenord (primär källa)
 - `keys/` - SSH-nycklar (ignoreras i git)
 
-Notering: äldre tillfälliga `.asar`-extrakt används inte av standardflödet. Lösenordsuppslag använder i första hand `naksu-password-words.json`.
+Notering: Naksu-ordlista genereras lokalt till `server/scripts/naksu-password-words.local.json` och checkas inte in i git.
 
 ## SSH-nycklar
 
@@ -89,6 +88,26 @@ Appen använder nyckelbaserad SSH mot Ubuntu-servrar. Standardnyckel i projektet
 - Publik: `keys/abitti2.pub`
 
 Säkerställ att public key finns i `~/.ssh/authorized_keys` på varje Ubuntu-server.
+
+## Naksu-ordlista (lokal generation)
+
+Övervakarlösenord kräver en lokal ordlista. Av säkerhetsskäl checkas den inte in publikt.
+
+1. Extrahera Naksu2-källan lokalt så `words.ts` finns (default-sökväg):
+   - `temp-naksu2-app/src/renderer/password/words.ts`
+2. Generera lokal ordlista:
+
+```bash
+npm run naksu:words:generate
+```
+
+Detta skapar:
+
+- `server/scripts/naksu-password-words.local.json` (ignoreras i git)
+
+Valfritt: sätt egen sökväg med env:
+
+- `NAKSU_WORDS_PATH=/path/to/words.json`
 
 ## Desktop (VNC) - förutsättningar
 

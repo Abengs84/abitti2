@@ -5,6 +5,7 @@ import DesktopConsole from './components/DesktopConsole'
 const LESSONS = [1, 2, 3, 4]
 const WEEK_DAYS = [0, 1, 2, 3, 4]
 const DAY_LABELS = ['Måndag', 'Tisdag', 'Onsdag', 'Torsdag', 'Fredag']
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'IKTadmin'
 
 const DEFAULT_SERVERS = [
   {
@@ -131,6 +132,18 @@ function formatDateWithWeekday(dateInput) {
   return `${capitalizedWeekday} ${formatDateDisplay(date)}`
 }
 
+function formatDateTimeDisplay(dateInput) {
+  const date = dateInput instanceof Date ? dateInput : new Date(dateInput)
+  if (Number.isNaN(date.getTime())) return ''
+  const day = String(date.getDate()).padStart(2, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const year = date.getFullYear()
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`
+}
+
 function getOrCreateTerminalClientId() {
   const generateId = () => {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
@@ -194,21 +207,6 @@ function toServerHref(serverName) {
   return `https://${value}`
 }
 
-function toServerAuthHref(serverName, password, username = 'valvoja') {
-  const baseHref = toServerHref(serverName)
-  if (baseHref === '#') return '#'
-  const cleanPassword = String(password || '').trim()
-  if (!cleanPassword) return baseHref
-  try {
-    const url = new URL(baseHref)
-    url.username = username
-    url.password = cleanPassword
-    return url.toString()
-  } catch {
-    return baseHref
-  }
-}
-
 function shortenServerName(serverName, max = 16) {
   const value = (serverName || '').trim()
   const normalized = value.replace(/\.koe\.abitti\.net$/i, '')
@@ -251,6 +249,8 @@ function App() {
   const [isCheckingStatuses, setIsCheckingStatuses] = useState(false)
   const [versionInfoByServerId, setVersionInfoByServerId] = useState({})
   const [isLoadingVersions, setIsLoadingVersions] = useState(false)
+  const [examInfoByServerId, setExamInfoByServerId] = useState({})
+  const [isLoadingExamInfo, setIsLoadingExamInfo] = useState(false)
   const [passwordInfoByServerId, setPasswordInfoByServerId] = useState({})
   const [isLoadingPasswords, setIsLoadingPasswords] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
@@ -277,6 +277,8 @@ function App() {
   const [desktopPassword, setDesktopPassword] = useState('')
   const [desktopConnectRequested, setDesktopConnectRequested] = useState(false)
   const [copiedCodeId, setCopiedCodeId] = useState('')
+  const [isGeneratingNaksuWords, setIsGeneratingNaksuWords] = useState(false)
+  const [naksuWordsMessage, setNaksuWordsMessage] = useState('')
   const terminalClientId = useMemo(() => getOrCreateTerminalClientId(), [])
 
   const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart])
@@ -464,7 +466,7 @@ function App() {
 
   function submitAdminPassword(e) {
     e.preventDefault()
-    if (adminPasswordInput === 'IKTadmin') {
+    if (adminPasswordInput === ADMIN_PASSWORD) {
       setIsAdminUnlocked(true)
       sessionStorage.setItem('abitti-admin-unlocked', 'true')
       setIsAdminLoginModalOpen(false)
@@ -602,6 +604,31 @@ function App() {
     setDesktopError('')
     setDesktopStatus('connecting')
     setDesktopConnectRequested(true)
+  }
+
+  async function generateNaksuWordsList() {
+    setIsGeneratingNaksuWords(true)
+    setNaksuWordsMessage('')
+    try {
+      const response = await fetch('/api/naksu-words/generate', {
+        method: 'POST',
+        headers: {
+          ...API_HEADERS,
+          'x-admin-unlocked': isAdminUnlocked ? 'true' : 'false',
+        },
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || 'Kunde inte generera ordlistan.')
+      }
+      setNaksuWordsMessage(payload.output || 'Ordlistan genererades.')
+      setErrorMessage('')
+    } catch (err) {
+      setNaksuWordsMessage('')
+      setErrorMessage(err.message || 'Kunde inte generera Naksu-ordlista.')
+    } finally {
+      setIsGeneratingNaksuWords(false)
+    }
   }
 
   function clearSelection() {
@@ -869,6 +896,48 @@ function App() {
     }
   }, [])
 
+  const refreshExamOverview = useCallback(
+    async (serversToCheck = []) => {
+      if (!serversToCheck.length) return
+      setIsLoadingExamInfo(true)
+      try {
+        const response = await fetch('/api/exam-overview-bulk', {
+          method: 'POST',
+          headers: {
+            ...API_HEADERS,
+            'x-admin-unlocked': isAdminUnlocked ? 'true' : 'false',
+          },
+          body: JSON.stringify({
+            targets: serversToCheck.map((server) => ({
+              id: server.id,
+              name: server.name,
+              ip: server.ip,
+              password: server.password,
+            })),
+          }),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || 'Kunde inte läsa provstatus.')
+        const map = {}
+        for (const row of payload.results ?? []) {
+          map[row.id] = {
+            counts: row.counts || null,
+            host: row.host || '',
+            examLoaded: Boolean(row.examLoaded),
+            serverTimeMs: Number(row.serverTimeMs) || 0,
+            error: row.error || '',
+          }
+        }
+        setExamInfoByServerId(map)
+      } catch {
+        // Keep previous overview on transient errors.
+      } finally {
+        setIsLoadingExamInfo(false)
+      }
+    },
+    [isAdminUnlocked],
+  )
+
   async function searchServerPassword(serverId, ip) {
     const cleanIp = ip.trim()
     if (!cleanIp) {
@@ -971,6 +1040,14 @@ function App() {
   function getServerOverviewTitle(server) {
     const status = serverStatusById[server.id]
     const version = versionInfoByServerId[server.id]
+    const exam = examInfoByServerId[server.id]
+    const examMeta = [
+      `Prov laddat: ${exam?.examLoaded ? 'Ja' : 'Nej'}`,
+      `Server-tid: ${exam?.serverTimeMs ? formatDateTimeDisplay(exam.serverTimeMs) : 'Okänd'}`,
+    ]
+    const examCounts = exam?.counts
+      ? `Väntar: ${exam.counts.waiting} | I provet: ${exam.counts.inExam} | Problem: ${exam.counts.problem} | Avslutat: ${exam.counts.finished}`
+      : ''
     return [
       `${server.label || 'Okänd'}`,
       `URL: ${server.name || '-'}`,
@@ -978,6 +1055,8 @@ function App() {
       `Status URL: ${status ? (status.urlReachable ? 'Ok' : 'Ner') : 'Okänd'}`,
       `Status IP: ${status ? (status.ipReachable ? 'Ok' : 'Ner') : 'Okänd'}`,
       `Version: ${version?.version || 'Okänd'}`,
+      ...(examCounts ? [examCounts] : []),
+      ...examMeta,
       `Lösenord: ${server.password ? 'Finns' : 'Saknas'}`,
       `Info: ${server.info || '-'}`,
     ].join('\n')
@@ -1265,21 +1344,25 @@ function App() {
     const runStatus = () => refreshServerStatuses(serversRef.current)
     const runVersions = () => refreshServerVersions(serversRef.current)
     const runPasswords = () => refreshServerPasswords(serversRef.current)
+    const runExamOverview = () => refreshExamOverview(serversRef.current)
     const initialTimer = setTimeout(() => {
       runStatus()
       runVersions()
       runPasswords()
+      runExamOverview()
     }, 0)
     const timer = setInterval(runStatus, 30000)
     const versionTimer = setInterval(runVersions, 60000)
     const passwordTimer = setInterval(runPasswords, 60000)
+    const examTimer = setInterval(runExamOverview, 30000)
     return () => {
       clearTimeout(initialTimer)
       clearInterval(timer)
       clearInterval(versionTimer)
       clearInterval(passwordTimer)
+      clearInterval(examTimer)
     }
-  }, [view, refreshServerStatuses, refreshServerVersions, refreshServerPasswords])
+  }, [view, refreshServerStatuses, refreshServerVersions, refreshServerPasswords, refreshExamOverview])
 
   return (
     <div className="layout" onContextMenu={(event) => event.preventDefault()}>
@@ -1339,19 +1422,6 @@ function App() {
                           >
                             {shortenServerName(server.name)}
                           </a>
-                          <a
-                            className={`password-link-btn ${server.password ? '' : 'disabled'}`.trim()}
-                            href={toServerAuthHref(server.name, server.password)}
-                            target="_blank"
-                            rel="noreferrer"
-                            aria-label="Öppna som valvoja"
-                            title="Öppna med färdig autentisering"
-                            onClick={(event) => {
-                              if (!server.password) event.preventDefault()
-                            }}
-                          >
-                            ↗
-                          </a>
                         </small>
                         <div className="server-password-chip">
                           <strong title={server.password || 'Lösenord saknas'}>
@@ -1364,7 +1434,7 @@ function App() {
                             aria-label="Kopiera lösenord"
                             title={copiedPasswordServerId === server.id ? 'Kopierat' : 'Kopiera lösenord'}
                           >
-                            ⧉
+                            {copiedPasswordServerId === server.id ? '✓' : '⧉'}
                           </button>
                         </div>
                       </div>
@@ -1444,9 +1514,9 @@ function App() {
               <h2>Servrar</h2>
               <div className="card-header-actions">
                 <span className="status-check-text">
-                  {isCheckingStatuses || isLoadingPasswords
-                    ? 'Uppdaterar status och lösenord...'
-                    : 'Status och lösenord uppdaterade'}
+                  {isCheckingStatuses || isLoadingPasswords || isLoadingExamInfo
+                    ? 'Uppdaterar status, lösenord och provinfo...'
+                    : 'Status, lösenord och provinfo uppdaterade'}
                 </span>
                 <button type="button" onClick={() => refreshServerStatuses(servers)}>
                   Uppdatera status
@@ -1687,6 +1757,17 @@ function App() {
             <p>Övervakarlösenord hämtas från serverns <code>passwordSeed</code> och räknas ut med Naksu2:s ordlista.
               Aktivera <code>Manuell override</code> om ni behöver skriva in ett eget lösenord efter framtida Naksu2-ändringar.
             </p>
+            <div className="terminal-toolbar-actions">
+              <button
+                type="button"
+                onClick={generateNaksuWordsList}
+                disabled={isGeneratingNaksuWords}
+                title="Generera lokal Naksu-ordlista (ej publik)"
+              >
+                {isGeneratingNaksuWords ? 'Genererar ordlista...' : 'Generera Naksu-ordlista'}
+              </button>
+            </div>
+            {naksuWordsMessage ? <p className="selection-hint">{naksuWordsMessage}</p> : null}
             <details className="info-expand">
               <summary>VNC</summary>
               <p>

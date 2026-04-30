@@ -318,6 +318,101 @@ function runLocalPasswordLookupScript(host) {
   })
 }
 
+function runLocalGenerateWordsScript() {
+  return new Promise((resolve, reject) => {
+    const args = ['server/scripts/generate-naksu-words.mjs']
+    const child = spawn('node', args, {
+      shell: false,
+      cwd: runtimeProcess.cwd(),
+      env: runtimeProcess.env,
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `generate words script failed (${code})`))
+        return
+      }
+      resolve(stdout.trim())
+    })
+  })
+}
+
+function getCandidateSshHostsFromServers(rows = []) {
+  const hosts = new Set()
+  for (const row of rows) {
+    const ipHost = normalizeShellHost(row.ip)
+    const nameHost = normalizeShellHost(row.name)
+    if (ipHost) hosts.add(ipHost)
+    if (nameHost) hosts.add(nameHost)
+  }
+  return [...hosts]
+}
+
+function downloadRemoteAsarToFile(host, outputPath) {
+  return new Promise((resolve, reject) => {
+    const sshExecutable = resolveSshExecutable()
+    const target = `${SSH_LOOKUP_USER}@${host}`
+    const args = [
+      '-i',
+      SSH_LOOKUP_KEY,
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      'ConnectTimeout=4',
+      target,
+      'cat /usr/lib/naksu2/resources/app.asar',
+    ]
+    const child = spawn(sshExecutable, args, {
+      shell: false,
+      cwd: runtimeProcess.cwd(),
+      env: runtimeProcess.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const writeStream = fs.createWriteStream(outputPath)
+    let stderr = ''
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+    child.stdout.pipe(writeStream)
+    child.on('error', (error) => {
+      writeStream.destroy()
+      reject(error)
+    })
+    writeStream.on('error', (error) => {
+      child.kill()
+      reject(error)
+    })
+    child.on('close', (code) => {
+      writeStream.end()
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `ssh cat app.asar failed (${code})`))
+        return
+      }
+      fs.stat(outputPath, (err, stats) => {
+        if (err) {
+          reject(err)
+          return
+        }
+        if (!stats || stats.size < 1024) {
+          reject(new Error('Nedladdad app.asar var tom eller ogiltig.'))
+          return
+        }
+        resolve(stats.size)
+      })
+    })
+  })
+}
+
 function parsePasswordLookupOutput(rawOutput) {
   const output = rawOutput.split(/\r?\n/)
   const result = {
@@ -441,6 +536,90 @@ async function canPing(host) {
   if (windowsOk) return true
   const unixOk = await runPing(['-c', '1', '-W', '1', host])
   return unixOk
+}
+
+function toExamCounts(payload) {
+  const toNumber = (value) => (Number.isFinite(Number(value)) ? Number(value) : null)
+  const direct = {
+    waiting:
+      toNumber(payload?.waiting) ??
+      toNumber(payload?.waitingCount) ??
+      toNumber(payload?.queued) ??
+      toNumber(payload?.queuedCount),
+    inExam:
+      toNumber(payload?.inExam) ??
+      toNumber(payload?.inExamCount) ??
+      toNumber(payload?.inProgress) ??
+      toNumber(payload?.active),
+    problem:
+      toNumber(payload?.problem) ??
+      toNumber(payload?.problemCount) ??
+      toNumber(payload?.errors) ??
+      toNumber(payload?.errorCount),
+    finished:
+      toNumber(payload?.finished) ??
+      toNumber(payload?.finishedCount) ??
+      toNumber(payload?.completed) ??
+      toNumber(payload?.done),
+  }
+  if (
+    Number.isInteger(direct.waiting) &&
+    Number.isInteger(direct.inExam) &&
+    Number.isInteger(direct.problem) &&
+    Number.isInteger(direct.finished)
+  ) {
+    return direct
+  }
+  const rooms = Array.isArray(payload?.examRooms) ? payload.examRooms : []
+  const fromRooms = { waiting: 0, inExam: 0, problem: 0, finished: 0 }
+  let hasAny = false
+  for (const room of rooms) {
+    const waiting = toNumber(room?.waiting ?? room?.waitingCount)
+    const inExam = toNumber(room?.inExam ?? room?.inExamCount ?? room?.inProgress)
+    const problem = toNumber(room?.problem ?? room?.problemCount ?? room?.errors)
+    const finished = toNumber(room?.finished ?? room?.finishedCount ?? room?.completed)
+    if ([waiting, inExam, problem, finished].some((value) => Number.isInteger(value))) {
+      fromRooms.waiting += Number.isInteger(waiting) ? waiting : 0
+      fromRooms.inExam += Number.isInteger(inExam) ? inExam : 0
+      fromRooms.problem += Number.isInteger(problem) ? problem : 0
+      fromRooms.finished += Number.isInteger(finished) ? finished : 0
+      hasAny = true
+    }
+  }
+  return hasAny ? fromRooms : null
+}
+
+async function fetchExamOverview(host, password) {
+  const auth = Buffer.from(`valvoja:${password}`, 'utf8').toString('base64')
+  const request = async (pathname) => {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 5000)
+    const url = `https://${host}${pathname}`
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          Accept: 'application/json',
+        },
+        signal: controller.signal,
+      })
+      if (!response.ok) {
+        throw new Error(`${pathname} svarade ${response.status}`)
+      }
+      return response.json()
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+  const [serverInfo, minutes] = await Promise.all([request('/api/server-info'), request('/api/minutes')])
+  const counts = toExamCounts(serverInfo) || toExamCounts(minutes)
+  return {
+    counts,
+    version: serverInfo?.version || '',
+    examLoaded: Boolean(serverInfo?.examLoaded),
+    serverTimeMs: Number(serverInfo?.serverTimeMs) || 0,
+  }
 }
 
 async function initDb() {
@@ -567,6 +746,50 @@ app.get('/api/state', async (_req, res) => {
     res.json(await getState())
   } catch {
     res.status(500).json({ error: 'Kunde inte läsa data.' })
+  }
+})
+
+app.post('/api/naksu-words/generate', async (req, res) => {
+  if (!requireAdmin(req, res)) return
+  try {
+    const output = await runLocalGenerateWordsScript()
+    res.json({ ok: true, output })
+  } catch (error) {
+    const localError = error
+    try {
+      const rows = await all('SELECT ip, name FROM servers ORDER BY sort_order, label')
+      const hosts = getCandidateSshHostsFromServers(rows)
+      const asarOutputPath = path.join(runtimeProcess.cwd(), 'temp-naksu2-app.asar')
+      const hostErrors = []
+      for (const host of hosts) {
+        try {
+          await downloadRemoteAsarToFile(host, asarOutputPath)
+          const output = await runLocalGenerateWordsScript()
+          res.json({
+            ok: true,
+            output: `${output}\n(hämtad via SSH från ${host})`,
+          })
+          return
+        } catch (hostError) {
+          hostErrors.push(`${host}: ${hostError.message}`)
+        }
+      }
+      res.json({
+        ok: false,
+        error:
+          `Kunde inte generera Naksu-ordlistan lokalt eller via SSH. ` +
+          `Lokalt fel: ${localError.message}` +
+          (hostErrors.length ? ` | SSH-fel: ${hostErrors.join(' ; ')}` : ''),
+      })
+    } catch (fallbackError) {
+      res.json({
+        ok: false,
+        error:
+          `Kunde inte generera Naksu-ordlistan. ` +
+          `Lokalt fel: ${localError.message}` +
+          ` | Fallback-fel: ${fallbackError.message}`,
+      })
+    }
   }
 })
 
@@ -956,6 +1179,51 @@ app.post('/api/server-status', async (req, res) => {
     }),
   )
 
+  res.json({ results })
+})
+
+app.post('/api/exam-overview-bulk', async (req, res) => {
+  if (!requireAdmin(req, res)) return
+  const targets = Array.isArray(req.body?.targets) ? req.body.targets : []
+  const results = await Promise.all(
+    targets.map(async (target) => {
+      const host = normalizeHost(target.name || target.ip || '')
+      const password = String(target.password || '').trim()
+      if (!host) return { id: target.id, error: 'Host saknas.' }
+      if (!password) return { id: target.id, host, error: 'Lösenord saknas.' }
+      try {
+        const reachable = await canConnect(host, 443, 1500)
+        if (!reachable) {
+          return {
+            id: target.id,
+            host,
+            counts: null,
+            error: 'Host svarar inte på HTTPS (443).',
+          }
+        }
+        const overview = await fetchExamOverview(host, password)
+        const counts = overview.counts
+        const noCountsMessage =
+          'Provstatus-räknare hittades inte i /api/server-info eller /api/minutes.'
+        return {
+          id: target.id,
+          host,
+          counts,
+          version: overview.version,
+          examLoaded: overview.examLoaded,
+          serverTimeMs: overview.serverTimeMs || 0,
+          error: counts ? '' : noCountsMessage,
+        }
+      } catch (error) {
+        return {
+          id: target.id,
+          host,
+          counts: null,
+          error: `Kunde inte läsa provstatus: ${error.message}`,
+        }
+      }
+    }),
+  )
   res.json({ results })
 })
 

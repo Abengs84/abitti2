@@ -57,10 +57,13 @@ function runSsh({ user, host, keyPath, remoteScript }) {
 
 async function loadWordsFromExtractedNaksu() {
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const envWordsPath = process.env.NAKSU_WORDS_PATH
   const candidates = [
+    envWordsPath ? path.resolve(envWordsPath) : null,
+    path.resolve(__dirname, './naksu-password-words.local.json'),
     path.resolve(__dirname, './naksu-password-words.json'),
     path.resolve(__dirname, '../../temp-naksu2-app/src/renderer/password/words.ts'),
-  ]
+  ].filter(Boolean)
   for (const filePath of candidates) {
     try {
       const raw = await fs.readFile(filePath, 'utf8')
@@ -77,7 +80,9 @@ async function loadWordsFromExtractedNaksu() {
       // Try next path.
     }
   }
-  throw new Error('Kunde inte läsa Naksu2-ordlistan lokalt. Extrahera app.asar först.')
+  throw new Error(
+    'Kunde inte läsa Naksu2-ordlistan lokalt. Tryck på "Generera Naksu-ordlista"-knappen i Admin.',
+  )
 }
 
 function parseRemoteOutput(raw) {
@@ -110,7 +115,6 @@ async function main() {
     process.exit(1)
   }
 
-  const words = await loadWordsFromExtractedNaksu()
   const remoteScript = `
 CONFIG="/home/school/.local/share/digabi/naksu2/naksu2-config.json"
 VERSION_FILE="/usr/lib/naksu2/version"
@@ -135,6 +139,7 @@ fi
 `
 
   try {
+    const words = await loadWordsFromExtractedNaksu()
     const sshOutput = await runSsh({ user, host, keyPath, remoteScript })
     const parsed = parseRemoteOutput(sshOutput)
     if (!parsed.passwordSeed.length) {
@@ -157,7 +162,15 @@ fi
     console.log(`naksu_version=${parsed.naksuVersion}`)
     console.log('source=naksu-password-seed')
   } catch (error) {
-    console.error(`Kunde inte köra lösenordsuppslag via SSH: ${error.message}`)
+    const message = String(error?.message || '')
+    if (message.includes('Kunde inte läsa Naksu2-ordlistan lokalt')) {
+      console.error(
+        'Kunde inte läsa Naksu2-ordlistan lokalt. Tryck på "Generera Naksu-ordlista"-knappen i Admin.',
+      )
+      process.exit(1)
+      return
+    }
+    console.error(`Kunde inte köra lösenordsuppslag via SSH: ${message || 'okänt fel'}`)
     process.exit(1)
   }
 }

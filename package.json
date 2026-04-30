@@ -10,12 +10,14 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "url:lookup:ssh": "node server/scripts/find-abitti-url.mjs"
+    "url:lookup:ssh": "node server/scripts/find-abitti-url.mjs",
+    "naksu:words:generate": "node server/scripts/generate-naksu-words.mjs"
   },
   "dependencies": {
     "@novnc/novnc": "^1.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "asar": "^3.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",

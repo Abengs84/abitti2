@@ -904,3 +904,35 @@ td:nth-child(n + 3) {
     max-width: 100%;
   }
 }
+
+@media (max-width: 1920px) {
+  th:nth-child(n + 3),
+  td:nth-child(n + 3) {
+    width: 126px;
+    min-width: 126px;
+    max-width: 126px;
+  }
+
+  .server-title {
+    gap: 0.12rem;
+  }
+
+  .server-title > span {
+    font-size: 0.83rem;
+  }
+
+  .server-title small {
+    max-width: 119px;
+    font-size: 0.68rem;
+  }
+
+  .server-password-chip strong {
+    font-size: 0.4rem;
+  }
+
+  .server-password-chip button {
+    width: 16px;
+    height: 16px;
+    font-size: 0.65rem;
+  }
+}

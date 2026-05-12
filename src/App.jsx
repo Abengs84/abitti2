@@ -587,15 +587,49 @@ function App() {
     setDesktopError('')
   }
 
+  async function copyTextWithFallback(text) {
+    const content = String(text ?? '')
+    if (!content) return false
+
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(content)
+        return true
+      }
+    } catch {
+      // Fall through to legacy copy method.
+    }
+
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = content
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      textarea.style.pointerEvents = 'none'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      return ok
+    } catch {
+      return false
+    }
+  }
+
   async function copyCodeSnippet(snippetId, content) {
     try {
-      await navigator.clipboard.writeText(content)
+      const copied = await copyTextWithFallback(content)
+      if (!copied) {
+        throw new Error('copy-failed')
+      }
       setCopiedCodeId(snippetId)
       setTimeout(() => {
         setCopiedCodeId((prev) => (prev === snippetId ? '' : prev))
       }, 1500)
     } catch {
-      setErrorMessage('Kunde inte kopiera kommandot.')
+      setErrorMessage('Kunde inte kopiera kommandot. Markera texten och kopiera manuellt.')
     }
   }
 
@@ -1262,14 +1296,17 @@ function App() {
       return
     }
     try {
-      await navigator.clipboard.writeText(value)
+      const copied = await copyTextWithFallback(value)
+      if (!copied) {
+        throw new Error('copy-failed')
+      }
       setCopiedPasswordServerId(server.id)
       setErrorMessage('')
       setTimeout(() => {
         setCopiedPasswordServerId((prev) => (prev === server.id ? '' : prev))
       }, 1600)
     } catch {
-      setErrorMessage('Kunde inte kopiera lösenordet.')
+      setErrorMessage('Kunde inte kopiera lösenordet. Markera texten och kopiera manuellt.')
     }
   }
 
